@@ -1,0 +1,170 @@
+---
+title: "MEJO 570 Final"
+author: "Lia Salvatierra"
+date: "2023-12-14"
+output: html_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+## R Markdown
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+#Which packages are we packing? 
+```{r}
+pacman::p_load(sf, tidyverse, dplyr)
+install.packages("janitor")
+install.packages("ggplot2")
+install.packages("leaflet")
+install.packages("tidygeocoder")
+```
+
+#Load them up!
+```{r}
+library(sf)
+library(tidyverse)
+library(dplyr)
+library(janitor)
+library(ggplot2)
+library(leaflet)
+library(tidygeocoder)
+```
+
+#This data interview attempts to understand where JROTC high school programs are located in the state of North Carolina and if the student poverty within of a school district has any correlation.
+
+# 1. We need to combine the addresses of each branch (MARINE CORPS, ARMY, COAST GUARD, NAVY and AIR FORCE
+
+```{r}
+jrotc_raw_first_half <- read.csv("/Users/liasalvatierra/Desktop/MEJO570FA23/FINAL/jrotc_labels_edited.csv")
+
+jrotc_raw_first_half <- jrotc_raw_first_half %>%
+  mutate_all(toupper)
+
+jrotc_raw_first_half
+```
+# a) bind with Air Force addresses 
+```{r}
+jrotc_airforce <- read.csv("/Users/liasalvatierra/Desktop/MEJO570FA23/FINAL/jrotc_airforce.csv")
+
+jrotc_raw <- rbind(jrotc_raw_first_half, jrotc_airforce) #Make sure the columns have the same names
+```
+# b) Format for tidygeocoder
+
+```{r}
+jrotc_for_geo <- jrotc_raw %>%
+  unite(full_addresses, HIGH.SCHOOL, ADDRESS, CITY, STATE, ZIP, sep = ",")
+jrotc_for_geo 
+```
+
+```{r}
+hs_locations <- jrotc_for_geo %>%
+  geocode(full_addresses, method = 'arcgis', full_results = TRUE)
+```
+# c) map the distribution of these programs across the state to identify possible geographic concentrations or gaps by i) create and plot a shapefile ...
+
+```{r}
+sf_jrotc <- hs_locations %>%
+  st_as_sf(coords = c("long", "lat"), crs = 4326) #Need to make CRS compatible for later calculation 
+
+#new_crs <- st_crs("EPSG:84") #FIX this 
+#sf_jrotc <- st_transform(sf_jrotc, crs = new_crs)
+
+ggplot() +
+  geom_sf(data = sf_jrotc$geometry, size = 0.5) + 
+  coord_sf(xlim = c(-85, -75), ylim = c(33,38)) +
+  labs(title = "Distribution of North Carolina JROTC Programs Statewide")
+```
+# iii) #Where are North Carolina school districts? https://catalog.data.gov/dataset/2020-cartographic-boundary-file-shp-current-unified-school-district-for-north-carolina-1-500000
+
+```{r}
+nc_school_districts <- st_read("/Users/liasalvatierra/Desktop/MEJO570FA23/FINAL/nc_school_district_shp/cb_2020_37_unsd_500k.shp")
+
+library(ggplot2)
+ggplot(nc_school_districts) +
+geom_sf() + 
+labs(title = "Map of North Carolina School Districts")
+```
+# 5. Which school districts are these JROTC programs in? 
+```{r}
+ggplot() +
+  geom_sf(data = nc_school_districts) +
+  geom_sf(data = sf_jrotc, aes(color = BRANCH), size = 0.5) +
+  coord_sf(xlim = c(-85, -75), ylim = c(33, 38)) +
+  scale_color_manual(values = c("ARMY" = "green", "NAVY" = "navy", "MARINE CORPS" = "blue", "COAST GUARD" = "red")) + 
+  labs(title = "North Carolina JROTC Programs Per School District")
+```
+#What are the student poverty levels of these districts? https://www.census.gov/data/datasets/2021/demo/saipe/2021-school-districts.html
+
+```{r}
+national_district_poverty <- read.csv("/Users/liasalvatierra/Desktop/MEJO570FA23/FINAL/ussd21.csv")
+national_district_poverty
+
+nc_district_poverty <- national_district_poverty %>% filter( State == "NC")
+
+nc_district_poverty <- nc_district_poverty %>% rename(total_pop_est = Estimated.Population.5.17, 
+         schoolkids_pop = Estimated.number.of.relevant.children.5.to.17.years.old.in.poverty.who.are.related.to.the.householder)
+
+nc_district_poverty$total_pop_est <- as.numeric(gsub(",", "", nc_district_poverty$total_pop_est))
+nc_district_poverty$schoolkids_pop <- as.numeric(gsub(",", "", nc_district_poverty$schoolkids_pop))
+
+clean_nc_district_poverty <- nc_district_poverty %>%
+  rename("NAME" = "Name")   
+```
+#Find percentage of kids per district in poverty 
+```{r}
+
+clean_nc_district_poverty <-
+clean_nc_district_poverty  %>%
+mutate(percentage_kids_pov = (schoolkids_pop / total_pop_est) * 100)
+
+clean_nc_district_poverty
+```
+
+#How many districts have greater than 20% of kids aged 5-17 in poverty? 
+```{r}
+over_20 <- clean_nc_district_poverty%>%
+  filter(percentage_kids_pov > 20) %>%
+  count()
+
+over_20
+```
+
+
+```{r}
+
+only_nc_pov <- as_tibble(clean_nc_district_poverty ) %>%
+  select("NAME", "percentage_kids_pov")
+
+final_map <- left_join(only_nc_pov, nc_school_districts, by = "NAME")
+
+final_map
+
+```
+
+#Plot map
+```{r}
+ggplot() +
+  geom_sf(data = final_map) +
+  geom_sf(data = sf_jrotc, aes(color = BRANCH), size = 0.5) +
+  coord_sf(xlim = c(-85, -75), ylim = c(33, 38)) +
+  scale_fill_viridis_c() + 
+  scale_color_manual(values = c("ARMY" = "green", "NAVY" = "navy", "MARINE CORPS" = "blue", "COAST GUARD" = "red")) + 
+  labs(title = "North Carolina JROTC Programs Per School District")
+
+```
+#Where are these NJROTC programs as compared to major North Carolina cities? 
+```{r}
+palette <- colorFactor(c("ARMY" = "green", "NAVY" = "navy", "MARINE CORPS"= "blue", "COAST GUARD" = "red"), domain = sf_jrotc$BRANCH)
+
+
+leaflet() %>%
+  addTiles() %>%
+  setView(-79.055847, 35.913200, zoom = 7) %>% 
+  addCircleMarkers(data = sf_jrotc, radius = 2, fill = TRUE, opacity = 1, fillOpacity = 1,
+                   color = ~palette(BRANCH), group = ~BRANCH, 
+                   popup = ~as.character(sf_jrotc$arcgis_address))
+```
+
+
